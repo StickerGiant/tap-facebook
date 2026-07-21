@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 import typing as t
+from collections import deque
 from functools import lru_cache
 
 import facebook_business.adobjects.user as fb_user
@@ -67,6 +68,15 @@ EXCLUDED_FIELDS = [
 SLEEP_TIME_INCREMENT = 5
 INSIGHTS_MAX_WAIT_TO_START_SECONDS = 5 * 60
 INSIGHTS_MAX_WAIT_TO_FINISH_SECONDS = 30 * 60
+
+# Number of days requested per async report job. The Facebook Insights API returns
+# one row per `time_increment` day for the whole `time_range`, so a wider window is
+# still daily-grained but collapses ~chunk_days one-day jobs into a single job.
+DEFAULT_REPORT_CHUNK_DAYS = 7
+# Max async report jobs kept in flight at once. Facebook computes async jobs in
+# parallel server-side and throttles per account, so this stays small; tune per
+# report via `max_concurrent_jobs` if the account tolerates more (or hits limits).
+DEFAULT_MAX_CONCURRENT_JOBS = 3
 
 
 class AdsInsightStream(Stream):
@@ -160,61 +170,69 @@ class AdsInsightStream(Stream):
             msg = f"Couldn't find account with id {account_id}"
             raise RuntimeError(msg)
 
-    def _run_job_to_completion(self, params: dict) -> None:
-        job = self.account.get_insights(
-            params=params,
-            is_async=True,
+    def _build_params(
+        self,
+        columns: list[str],
+        time_increment: int,
+        since: pendulum.Date,
+        until: pendulum.Date,
+    ) -> dict:
+        return {
+            "level": self._report_definition["level"],
+            "action_breakdowns": self._report_definition["action_breakdowns"],
+            "action_report_time": self._report_definition["action_report_time"],
+            "breakdowns": self._report_definition["breakdowns"],
+            "fields": columns,
+            "time_increment": time_increment,
+            "limit": 100,
+            "action_attribution_windows": [
+                self._report_definition["action_attribution_windows_view"],
+                self._report_definition["action_attribution_windows_click"],
+            ],
+            "time_range": {
+                "since": since.to_date_string(),
+                "until": until.to_date_string(),
+            },
+        }
+
+    def _check_job_status(self, entry: dict) -> str:
+        """Refresh one in-flight job and raise if it failed or exceeded a wait cap."""
+        entry["job"] = entry["job"].api_get()
+        job = entry["job"]
+        status = job[AdReportRun.Field.async_status]
+        percent_complete = job[AdReportRun.Field.async_percent_completion]
+        time_range = entry["params"]["time_range"]
+        self.logger.info(
+            "%s for %s - %s. %s%% done.",
+            status,
+            time_range["since"],
+            time_range["until"],
+            percent_complete,
         )
-        status = None
-        time_start = time.time()
-        while status != "Job Completed":
-            duration = time.time() - time_start
-            job = job.api_get()
-            status = job[AdReportRun.Field.async_status]
-            percent_complete = job[AdReportRun.Field.async_percent_completion]
-
-            job_id = job["id"]
-            self.logger.info(
-                "%s for %s - %s. %s%% done. ",
-                status,
-                params["time_range"]["since"],
-                params["time_range"]["until"],
-                percent_complete,
+        if status == "Job Failed":
+            raise RuntimeError(dict(job))
+        duration = time.time() - entry["started"]
+        if duration > INSIGHTS_MAX_WAIT_TO_START_SECONDS and percent_complete == 0:
+            msg = (
+                f"Insights job {job['id']} did not start after "
+                f"{INSIGHTS_MAX_WAIT_TO_START_SECONDS} seconds. "
+                "This is an intermittent error and may resolve itself on subsequent "
+                "queries to the Facebook API. You should deselect fields from the "
+                "schema that are not necessary, as that may help improve the "
+                "reliability of the Facebook API."
             )
-
-            if status == "Job Completed":
-                return job
-            if status == "Job Failed":
-                raise RuntimeError(dict(job))
-            if duration > INSIGHTS_MAX_WAIT_TO_START_SECONDS and percent_complete == 0:
-                error_message = (
-                    f"Insights job {job_id} did not start after "
-                    f"{INSIGHTS_MAX_WAIT_TO_START_SECONDS} seconds. "
-                    "This is an intermittent error and may resolve itself on subsequent "
-                    "queries to the Facebook API. "
-                    "You should deselect fields from the schema that are not necessary, "
-                    "as that may help improve the reliability of the Facebook API."
-                )
-                raise RuntimeError(error_message)
-
-            if duration > INSIGHTS_MAX_WAIT_TO_FINISH_SECONDS:
-                error_message = (
-                    f"Insights job {job_id} did not complete after "
-                    f"{INSIGHTS_MAX_WAIT_TO_FINISH_SECONDS // 60} seconds. "
-                    "This is an intermittent error and may resolve itself on "
-                    "subsequent queries to the Facebook API. "
-                    "You should deselect fields from the schema that are not necessary, "
-                    "as that may help improve the reliability of the Facebook API."
-                )
-                raise RuntimeError(error_message)
-
-            self.logger.info(
-                "Sleeping for %s seconds until job is done",
-                SLEEP_TIME_INCREMENT,
+            raise RuntimeError(msg)
+        if duration > INSIGHTS_MAX_WAIT_TO_FINISH_SECONDS:
+            msg = (
+                f"Insights job {job['id']} did not complete after "
+                f"{INSIGHTS_MAX_WAIT_TO_FINISH_SECONDS // 60} minutes. "
+                "This is an intermittent error and may resolve itself on subsequent "
+                "queries to the Facebook API. You should deselect fields from the "
+                "schema that are not necessary, as that may help improve the "
+                "reliability of the Facebook API."
             )
-            time.sleep(SLEEP_TIME_INCREMENT)
-        msg = "Job failed to complete for unknown reason"
-        raise RuntimeError(msg)
+            raise RuntimeError(msg)
+        return status
 
     def _get_selected_columns(self) -> list[str]:
         columns = [
@@ -280,30 +298,57 @@ class AdsInsightStream(Stream):
         ).date()
 
         report_start = self._get_start_date(context)
-        report_end = report_start.add(days=time_increment)
-
         columns = self._get_selected_columns()
-        while report_start <= sync_end_date:
-            params = {
-                "level": self._report_definition["level"],
-                "action_breakdowns": self._report_definition["action_breakdowns"],
-                "action_report_time": self._report_definition["action_report_time"],
-                "breakdowns": self._report_definition["breakdowns"],
-                "fields": columns,
-                "time_increment": time_increment,
-                "limit": 100,
-                "action_attribution_windows": [
-                    self._report_definition["action_attribution_windows_view"],
-                    self._report_definition["action_attribution_windows_click"],
-                ],
-                "time_range": {
-                    "since": report_start.to_date_string(),
-                    "until": report_end.to_date_string(),
-                },
-            }
-            job = self._run_job_to_completion(params)  # type: ignore[func-returns-value]
-            for obj in job.get_result():
-                yield obj.export_all_data()
-            # Bump to the next increment
-            report_start = report_start.add(days=time_increment)
-            report_end = report_end.add(days=time_increment)
+
+        chunk_days = self._report_definition.get(
+            "report_chunk_days",
+            DEFAULT_REPORT_CHUNK_DAYS,
+        )
+        max_concurrent = max(
+            1,
+            self._report_definition.get(
+                "max_concurrent_jobs",
+                DEFAULT_MAX_CONCURRENT_JOBS,
+            ),
+        )
+
+        # Build the request windows. Each async job pulls `chunk_days` at once but is
+        # still bucketed by `time_increment` days server-side, so daily granularity is
+        # preserved while collapsing ~chunk_days one-day jobs into a single job.
+        pending: deque[tuple[pendulum.Date, pendulum.Date]] = deque()
+        window_start = report_start
+        while window_start <= sync_end_date:
+            pending.append((window_start, window_start.add(days=chunk_days)))
+            window_start = window_start.add(days=chunk_days)
+
+        # Bounded-concurrency pipeline: keep up to `max_concurrent` async jobs in
+        # flight on Facebook's side (it computes them in parallel) and poll them
+        # together, overlapping the otherwise-dead wait time. Single-threaded, so no
+        # SDK thread-safety concerns. Results may arrive out of date order, which is
+        # fine: the stream is unsorted, so state finalises to the max date_start.
+        in_flight: list[dict] = []
+
+        def submit_jobs() -> None:
+            while len(in_flight) < max_concurrent and pending:
+                since, until = pending.popleft()
+                params = self._build_params(columns, time_increment, since, until)
+                in_flight.append(
+                    {
+                        "job": self.account.get_insights(params=params, is_async=True),
+                        "params": params,
+                        "started": time.time(),
+                    },
+                )
+
+        submit_jobs()
+        while in_flight:
+            made_progress = False
+            for entry in list(in_flight):
+                if self._check_job_status(entry) == "Job Completed":
+                    in_flight.remove(entry)
+                    for obj in entry["job"].get_result():
+                        yield obj.export_all_data()
+                    made_progress = True
+            submit_jobs()  # top up freed slots
+            if in_flight and not made_progress:
+                time.sleep(SLEEP_TIME_INCREMENT)

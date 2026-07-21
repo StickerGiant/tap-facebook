@@ -47,6 +47,8 @@ DEFAULT_INSIGHT_REPORT = {
     "action_attribution_windows_click": "7d_click",
     "action_report_time": "mixed",
     "lookback_window": 28,
+    "report_chunk_days": 7,
+    "max_concurrent_jobs": 3,
 }
 
 
@@ -165,6 +167,29 @@ class TapFacebook(Tap):
                             "last emitted it, so we attempt to retrieve it again."
                         ),
                         default=28,
+                    ),
+                    th.Property(
+                        "report_chunk_days",
+                        th.IntegerType,
+                        description=(
+                            "Number of days requested per async report job. Results stay "
+                            "bucketed by `time_increment_days`, so a wider window keeps the "
+                            "same grain while collapsing many one-day jobs into one. "
+                            "Larger values mean fewer, bigger jobs (watch the 30-minute "
+                            "per-job wait cap and Facebook's async row limits)."
+                        ),
+                        default=7,
+                    ),
+                    th.Property(
+                        "max_concurrent_jobs",
+                        th.IntegerType,
+                        description=(
+                            "Maximum async report jobs kept in flight at once. Facebook "
+                            "computes async jobs in parallel server-side and throttles per "
+                            "account, so keep this small; raise it if the account tolerates "
+                            "more concurrency, lower it if you hit rate limits."
+                        ),
+                        default=3,
                     ),
                 ),
             ),
