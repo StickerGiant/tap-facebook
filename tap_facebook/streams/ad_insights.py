@@ -7,6 +7,7 @@ import typing as t
 from collections import deque
 from functools import lru_cache
 
+import backoff
 import facebook_business.adobjects.user as fb_user
 import pendulum
 from facebook_business.adobjects.adaccount import AdAccount
@@ -15,8 +16,11 @@ from facebook_business.adobjects.adsactionstats import AdsActionStats
 from facebook_business.adobjects.adshistogramstats import AdsHistogramStats
 from facebook_business.adobjects.adsinsights import AdsInsights
 from facebook_business.api import FacebookAdsApi
+from facebook_business.exceptions import FacebookRequestError
 from singer_sdk import typing as th
 from singer_sdk.streams.core import REPLICATION_INCREMENTAL, Stream
+
+T = t.TypeVar("T")
 
 if t.TYPE_CHECKING:
     from singer_sdk.helpers.types import Context
@@ -77,6 +81,19 @@ DEFAULT_REPORT_CHUNK_DAYS = 7
 # parallel server-side and throttles per account, so this stays small; tune per
 # report via `max_concurrent_jobs` if the account tolerates more (or hits limits).
 DEFAULT_MAX_CONCURRENT_JOBS = 3
+
+# Facebook's async insights jobs fail intermittently server-side ("Job Failed" with
+# 0% progress and no detail) and the Graph API throttles calls with transient
+# errors. Neither is a real fault in the request, so a failed chunk is resubmitted
+# and throttled calls are retried with exponential backoff before giving up.
+DEFAULT_MAX_JOB_ATTEMPTS = 3
+API_RETRY_MAX_TRIES = 5
+API_RETRY_BASE_SECONDS = 30
+# Graph API error codes that indicate throttling or a transient outage.
+# 1/2 unknown/service unavailable, 4 app-level request limit, 17 user-level
+# request limit, 32 page-level request limit, 613 custom rate limit,
+# 80000/80004 Marketing API insights call load.
+TRANSIENT_ERROR_CODES = frozenset({1, 2, 4, 17, 32, 613, 80000, 80004})
 
 
 class AdsInsightStream(Stream):
@@ -195,13 +212,88 @@ class AdsInsightStream(Stream):
             },
         }
 
+    @staticmethod
+    def _is_transient_error(err: FacebookRequestError) -> bool:
+        """Whether a Graph API error is throttling/outage rather than a bad request."""
+        if err.api_transient_error():
+            return True
+        return err.api_error_code() in TRANSIENT_ERROR_CODES
+
+    def _call_with_backoff(self, what: str, fn: t.Callable[[], T]) -> T:
+        """Run one Graph API call, retrying transient errors with exponential backoff."""
+
+        def _log_retry(details: dict) -> None:
+            err = details["exception"]
+            self.logger.warning(
+                "Transient Facebook API error during %s (code %s, subcode %s): %s. "
+                "Retrying in %.0fs (attempt %s/%s).",
+                what,
+                err.api_error_code(),
+                err.api_error_subcode(),
+                err.api_error_message(),
+                details["wait"],
+                details["tries"],
+                API_RETRY_MAX_TRIES,
+            )
+
+        retrying = backoff.on_exception(
+            backoff.expo,
+            FacebookRequestError,
+            max_tries=API_RETRY_MAX_TRIES,
+            factor=API_RETRY_BASE_SECONDS,
+            jitter=None,
+            giveup=lambda err: not self._is_transient_error(err),
+            on_backoff=_log_retry,
+        )
+        return retrying(fn)()
+
+    def _submit_job(self, params: dict, attempt: int = 1) -> dict:
+        """Start one async insights job for `params` and return its in-flight entry."""
+        time_range = params["time_range"]
+        job = self._call_with_backoff(
+            f"submit of {time_range['since']} - {time_range['until']}",
+            lambda: self.account.get_insights(params=params, is_async=True),
+        )
+        return {"job": job, "params": params, "started": time.time(), "attempt": attempt}
+
+    def _resubmit_or_raise(self, entry: dict, reason: str) -> str:
+        """Replace a failed/stuck job with a fresh one, or raise once attempts run out."""
+        time_range = entry["params"]["time_range"]
+        attempt = entry["attempt"]
+        if attempt >= entry["max_attempts"]:
+            msg = (
+                f"Insights job {entry['job']['id']} for {time_range['since']} - "
+                f"{time_range['until']} {reason} on attempt {attempt}/"
+                f"{entry['max_attempts']}; giving up. This is usually an intermittent "
+                "Facebook-side error and may resolve on a later run. Deselecting "
+                "unnecessary fields can also improve reliability. "
+                f"Last job: {dict(entry['job'])}"
+            )
+            raise RuntimeError(msg)
+        self.logger.warning(
+            "Insights job %s for %s - %s %s (attempt %s/%s). Resubmitting.",
+            entry["job"]["id"],
+            time_range["since"],
+            time_range["until"],
+            reason,
+            attempt,
+            entry["max_attempts"],
+        )
+        fresh = self._submit_job(entry["params"], attempt=attempt + 1)
+        fresh["max_attempts"] = entry["max_attempts"]
+        entry.update(fresh)
+        return "Job Resubmitted"
+
     def _check_job_status(self, entry: dict) -> str:
-        """Refresh one in-flight job and raise if it failed or exceeded a wait cap."""
-        entry["job"] = entry["job"].api_get()
+        """Refresh one in-flight job; resubmit it if Facebook failed or stalled it."""
+        time_range = entry["params"]["time_range"]
+        entry["job"] = self._call_with_backoff(
+            f"status poll of {time_range['since']} - {time_range['until']}",
+            entry["job"].api_get,
+        )
         job = entry["job"]
         status = job[AdReportRun.Field.async_status]
         percent_complete = job[AdReportRun.Field.async_percent_completion]
-        time_range = entry["params"]["time_range"]
         self.logger.info(
             "%s for %s - %s. %s%% done.",
             status,
@@ -209,19 +301,14 @@ class AdsInsightStream(Stream):
             time_range["until"],
             percent_complete,
         )
-        if status == "Job Failed":
-            raise RuntimeError(dict(job))
+        if status in ("Job Failed", "Job Skipped"):
+            return self._resubmit_or_raise(entry, f"reported '{status}'")
         duration = time.time() - entry["started"]
         if duration > INSIGHTS_MAX_WAIT_TO_START_SECONDS and percent_complete == 0:
-            msg = (
-                f"Insights job {job['id']} did not start after "
-                f"{INSIGHTS_MAX_WAIT_TO_START_SECONDS} seconds. "
-                "This is an intermittent error and may resolve itself on subsequent "
-                "queries to the Facebook API. You should deselect fields from the "
-                "schema that are not necessary, as that may help improve the "
-                "reliability of the Facebook API."
+            return self._resubmit_or_raise(
+                entry,
+                f"did not start after {INSIGHTS_MAX_WAIT_TO_START_SECONDS} seconds",
             )
-            raise RuntimeError(msg)
         if duration > INSIGHTS_MAX_WAIT_TO_FINISH_SECONDS:
             msg = (
                 f"Insights job {job['id']} did not complete after "
@@ -311,6 +398,13 @@ class AdsInsightStream(Stream):
                 DEFAULT_MAX_CONCURRENT_JOBS,
             ),
         )
+        max_attempts = max(
+            1,
+            self._report_definition.get(
+                "max_job_attempts",
+                DEFAULT_MAX_JOB_ATTEMPTS,
+            ),
+        )
 
         # Build the request windows. Each async job pulls `chunk_days` at once but is
         # still bucketed by `time_increment` days server-side, so daily granularity is
@@ -332,13 +426,9 @@ class AdsInsightStream(Stream):
             while len(in_flight) < max_concurrent and pending:
                 since, until = pending.popleft()
                 params = self._build_params(columns, time_increment, since, until)
-                in_flight.append(
-                    {
-                        "job": self.account.get_insights(params=params, is_async=True),
-                        "params": params,
-                        "started": time.time(),
-                    },
-                )
+                entry = self._submit_job(params)
+                entry["max_attempts"] = max_attempts
+                in_flight.append(entry)
 
         submit_jobs()
         while in_flight:

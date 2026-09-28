@@ -16,6 +16,7 @@ license-files = ["LICENSE"]
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "backoff>=2.2",
     "facebook-business~=21.0.3",
     "pendulum~=3.1.0",
     "requests~=2.32",

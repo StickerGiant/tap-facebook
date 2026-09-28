@@ -49,6 +49,7 @@ DEFAULT_INSIGHT_REPORT = {
     "lookback_window": 28,
     "report_chunk_days": 7,
     "max_concurrent_jobs": 3,
+    "max_job_attempts": 3,
 }
 
 
@@ -188,6 +189,17 @@ class TapFacebook(Tap):
                             "computes async jobs in parallel server-side and throttles per "
                             "account, so keep this small; raise it if the account tolerates "
                             "more concurrency, lower it if you hit rate limits."
+                        ),
+                        default=3,
+                    ),
+                    th.Property(
+                        "max_job_attempts",
+                        th.IntegerType,
+                        description=(
+                            "How many times a report window is submitted before the sync "
+                            "fails. Facebook intermittently fails or never starts async "
+                            "insights jobs with no error detail; a failed or stalled job "
+                            "is resubmitted until this many attempts are used up."
                         ),
                         default=3,
                     ),
