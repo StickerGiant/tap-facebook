@@ -84,8 +84,9 @@ DEFAULT_MAX_CONCURRENT_JOBS = 3
 
 # Facebook's async insights jobs fail intermittently server-side ("Job Failed" with
 # 0% progress and no detail) and the Graph API throttles calls with transient
-# errors. Neither is a real fault in the request, so a failed chunk is resubmitted
-# and throttled calls are retried with exponential backoff before giving up.
+# errors on any call: submit, status poll, or paging a finished job's results.
+# Neither is a real fault in the request, so a failed chunk is resubmitted and
+# throttled calls are retried with exponential backoff before giving up.
 DEFAULT_MAX_JOB_ATTEMPTS = 3
 API_RETRY_MAX_TRIES = 5
 API_RETRY_BASE_SECONDS = 30
@@ -255,6 +256,21 @@ class AdsInsightStream(Stream):
             lambda: self.account.get_insights(params=params, is_async=True),
         )
         return {"job": job, "params": params, "started": time.time(), "attempt": attempt}
+
+    def _fetch_results(self, entry: dict) -> list[dict]:
+        """Page through a completed job's rows, retrying transient errors from page one.
+
+        Facebook returns the rows of an async report through a paginated cursor, and
+        each page is its own Graph API call that can fail transiently just like a
+        submit or a status poll. A retry restarts the cursor from the first page and
+        may re-yield rows already emitted; that is safe because the loader upserts on
+        the stream's primary key, and it is far cheaper than failing the whole sync.
+        """
+        time_range = entry["params"]["time_range"]
+        return self._call_with_backoff(
+            f"result fetch of {time_range['since']} - {time_range['until']}",
+            lambda: [obj.export_all_data() for obj in entry["job"].get_result()],
+        )
 
     def _resubmit_or_raise(self, entry: dict, reason: str) -> str:
         """Replace a failed/stuck job with a fresh one, or raise once attempts run out."""
@@ -436,8 +452,7 @@ class AdsInsightStream(Stream):
             for entry in list(in_flight):
                 if self._check_job_status(entry) == "Job Completed":
                     in_flight.remove(entry)
-                    for obj in entry["job"].get_result():
-                        yield obj.export_all_data()
+                    yield from self._fetch_results(entry)
                     made_progress = True
             submit_jobs()  # top up freed slots
             if in_flight and not made_progress:
