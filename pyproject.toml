@@ -16,8 +16,8 @@ license-files = ["LICENSE"]
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "backoff>=2.2",
-    "facebook-business~=21.0.3",
+    "backoff>=2.2; python_version < '4'",
+    "facebook-business~=26.0.2",
     "pendulum~=3.1.0",
     "requests~=2.32",
     "singer-sdk~=0.47.0",

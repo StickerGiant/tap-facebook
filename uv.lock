@@ -292,6 +292,15 @@ wheels = [
 ]
 
 [[package]]
+name = "capi-param-builder-python"
+version = "1.3.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ed/09/788954a7e0ceb865feae18c0ffb5fda17b0f599e184ab1edbbe3612e13aa/capi_param_builder_python-1.3.2.tar.gz", hash = "sha256:fb926423308bf2754cef1e1bf0fed2d3d58cfad6b660fcb86ca2dcabd6a40eec", size = 26118, upload-time = "2026-09-16T22:27:29.987Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ea/99/cb3bb8042990f6432b71258426af08fc974f5146faf211da46833410d5e4/capi_param_builder_python-1.3.2-py3-none-any.whl", hash = "sha256:6799999a2eb16f95788145780e8f5d5b4574db51645216e9daea6f7d12483eff", size = 34322, upload-time = "2026-09-16T22:27:29.002Z" },
+]
+
+[[package]]
 name = "certifi"
 version = "2026.7.22"
 source = { registry = "https://pypi.org/simple" }
@@ -516,18 +525,19 @@ wheels = [
 
 [[package]]
 name = "facebook-business"
-version = "21.0.5"
+version = "26.0.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
+    { name = "capi-param-builder-python" },
     { name = "curlify" },
     { name = "pycountry" },
     { name = "requests" },
     { name = "six" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/8f/57/519a8f8ed9385e130539dda4e90dc981c0c761070c97cfc44a177e744533/facebook_business-21.0.5.tar.gz", hash = "sha256:5b21f06315ff0634a0752affd291a44d5f30686e248eb1de1b8908587511e2c3", size = 641894, upload-time = "2024-11-16T01:00:24.155Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/24/7f/cddbafdeff9383c034a24f2eaec7020259db70293174818a1b340450aaa7/facebook_business-26.0.2.tar.gz", hash = "sha256:c9c3787a7ab048c8f0b4b6609204e49b877e0d3e67401f0bec20170821694df5", size = 747337, upload-time = "2026-09-21T05:49:48.495Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/37/4e/bfdca8dfc7e8e632a224f7fe5216a3f5e9d2fd69169b171bc0f94a6be894/facebook_business-21.0.5-py3-none-any.whl", hash = "sha256:8497eb7fc1fd6814bf90ffb4ee6d376975781785fa417ff0dbc689215245ef5d", size = 1355635, upload-time = "2024-11-16T01:00:21.847Z" },
+    { url = "https://files.pythonhosted.org/packages/6e/1f/e3afbb6ea140a40b8887064beeeb27c22ca056020347ea6845fec82a1fb5/facebook_business-26.0.2-py3-none-any.whl", hash = "sha256:dd7168db675d101aa3fc77f745fdda2f4dc2ab4d5dd6c06ed67a2baab4c685f3", size = 1596226, upload-time = "2026-09-21T05:49:46.735Z" },
 ]
 
 [[package]]
@@ -952,7 +962,7 @@ wheels = [
 name = "meltano-tap-facebook"
 source = { editable = "." }
 dependencies = [
-    { name = "backoff" },
+    { name = "backoff", marker = "python_full_version < '4'" },
     { name = "facebook-business" },
     { name = "pendulum" },
     { name = "requests" },
@@ -971,8 +981,8 @@ typing = [
 
 [package.metadata]
 requires-dist = [
-    { name = "backoff", specifier = ">=2.2" },
-    { name = "facebook-business", specifier = ">=21.0.3,<21.1.0" },
+    { name = "backoff", marker = "python_full_version < '4'", specifier = ">=2.2" },
+    { name = "facebook-business", specifier = ">=26.0.2,<26.1.0" },
     { name = "pendulum", specifier = ">=3.1.0,<3.2.0" },
     { name = "requests", specifier = ">=2.32,<3.0" },
     { name = "singer-sdk", specifier = ">=0.47.0,<0.48.0" },

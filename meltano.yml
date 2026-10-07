@@ -23,7 +23,7 @@ plugins:
     - name: account_id
       kind: string
     - name: api_version
-      value: 'v16.0'
+      value: 'v26.0'
     config:
       insights_buffer_days: 7
 environments:

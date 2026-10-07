@@ -18,7 +18,7 @@ Built with the [Meltano Singer SDK](https://sdk.meltano.com).
 | Setting             | Required | Default | Description |
 |:--------------------|:--------:|:-------:|:------------|
 | access_token        | True     | None    | The token to authenticate against the API service |
-| api_version         | False    | v16.0   | The API version to request data from. |
+| api_version         | False    | v26.0   | The API version to request data from. |
 | account_id          | True     | None    | Your Facebook Account ID. |
 | start_date          | False    | None    | The earliest record date to sync |
 | end_date            | False    | None    | The latest record date to sync |

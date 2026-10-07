@@ -70,7 +70,7 @@ class TapFacebook(Tap):
             "api_version",
             th.StringType,
             description="The API version to request data from.",
-            default="v22.0",
+            default="v26.0",
         ),
         th.Property(
             "account_id",
