@@ -69,11 +69,8 @@ EXCLUDED_FIELDS = [
     "marketing_messages_phone_call_btn_click_rate",
     "marketing_messages_website_purchase_values",
     "wish_bid",
-    # Added to the SDK between v21 and v26. Kept out of the schema because the
-    # default report requests every property, and these break it (verified
-    # against v26.0 on a live account):
-    # - configurable_*: the API rejects the request unless a
-    #   customization_name filter is supplied.
+    # These break requests against v26:
+    # - configurable_*: the API rejects the request unless a customization_name filter is supplied.
     "configurable_attribution_action",
     "configurable_attribution_actionvalue",
     "configurable_audience_overlap_reach",
@@ -96,9 +93,7 @@ EXCLUDED_FIELDS = [
     "playable_average_game_length",
     "playable_game_start_rate",
     "total_card_view",
-    # - the remaining fields make the async job fail, and some of them count as
-    #   'Custom Analytics metrics' which the API limits to 5 calls per 6 hours
-    #   per ad account (#613), so a select-all sync would exhaust that quota.
+    # - These count as 'Custom Analytics metrics' which the API limits to 5 calls per 6 hours, selecting all exhauts that quota
     "advanced_actions_28d_view",
     "advanced_reach_1d_lookback",
     "advanced_reach_28d_lookback",
