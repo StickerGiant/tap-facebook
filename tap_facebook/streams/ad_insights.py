@@ -8,6 +8,7 @@ from collections import deque
 from functools import lru_cache
 
 import backoff
+import backoff.types
 import facebook_business.adobjects.user as fb_user
 import pendulum
 from facebook_business.adobjects.adaccount import AdAccount
@@ -66,7 +67,98 @@ EXCLUDED_FIELDS = [
     "estimated_ad_recallers_upper_bound",
     "marketing_messages_media_view_rate",
     "marketing_messages_phone_call_btn_click_rate",
+    "marketing_messages_website_purchase_values",
     "wish_bid",
+    # These break requests against v26:
+    # - configurable_*: the API rejects the request unless a customization_name filter is supplied.
+    "configurable_attribution_action",
+    "configurable_attribution_actionvalue",
+    "configurable_audience_overlap_reach",
+    "configurable_audience_overlap_with_conv_action",
+    "configurable_audience_overlap_with_conv_converters",
+    "configurable_audience_overlap_with_conv_exposure_cost",
+    "configurable_audience_overlap_with_conv_exposure_impressions",
+    "configurable_audience_overlap_with_conv_exposure_reach",
+    "configurable_placement_ptc_conversions",
+    "configurable_placement_ptc_converters",
+    "configurable_placement_ptc_reach",
+    "configurable_reachbyfrequency_action",
+    "configurable_reachbyfrequency_converters_count",
+    "configurable_reachbyfrequency_impressions_cost",
+    "configurable_reachbyfrequency_impressions_count",
+    "configurable_reachbyfrequency_reach",
+    # - rejected outright by the API (#2 'Service temporarily unavailable').
+    "link_clicks_per_results",
+    "opportunity_score_l4",
+    "playable_average_game_length",
+    "playable_game_start_rate",
+    "total_card_view",
+    # - These count as 'Custom Analytics metrics' which the API limits to 5 calls per 6 hours, selecting all exhauts that quota
+    "advanced_actions_28d_view",
+    "advanced_reach_1d_lookback",
+    "advanced_reach_28d_lookback",
+    "advanced_reach_7d_lookback",
+    "anchor_event_attribution_setting",
+    "anchor_events_performance_indicator",
+    "conversion_leads",
+    "converted_product_app_custom_event_fb_mobile_purchase",
+    "converted_product_app_custom_event_fb_mobile_purchase_value",
+    "converted_product_offline_purchase",
+    "converted_product_offline_purchase_value",
+    "converted_product_omni_purchase",
+    "converted_product_omni_purchase_values",
+    "converted_product_website_pixel_purchase",
+    "converted_product_website_pixel_purchase_value",
+    "converted_promoted_product_app_custom_event_fb_mobile_purchase",
+    "converted_promoted_product_app_custom_event_fb_mobile_purchase_value",
+    "converted_promoted_product_offline_purchase",
+    "converted_promoted_product_offline_purchase_value",
+    "converted_promoted_product_omni_purchase",
+    "converted_promoted_product_omni_purchase_values",
+    "converted_promoted_product_quantity",
+    "converted_promoted_product_value",
+    "converted_promoted_product_website_pixel_purchase",
+    "converted_promoted_product_website_pixel_purchase_value",
+    "cost_per_6_sec_video_view",
+    "cost_per_message_delivered",
+    "cost_per_objective_result",
+    "cost_per_result",
+    "creative_diversity_data",
+    "creative_diversity_label",
+    "creative_diversity_score",
+    "creative_fatigue_summary",
+    "creative_fatigued_ads",
+    "instagram_profile_follow",
+    "instagram_profile_visits",
+    "landing_page_view_actions_per_link_click",
+    "landing_page_view_per_link_click",
+    "landing_page_view_per_purchase_rate",
+    "marketing_messages_click_rate_benchmark",
+    "marketing_messages_delivered",
+    "marketing_messages_link_btn_click",
+    "marketing_messages_quick_reply_btn_click",
+    "marketing_messages_read",
+    "marketing_messages_read_rate_benchmark",
+    "marketing_messages_sent",
+    "marketing_messages_spend_currency",
+    "messages_delivered",
+    "messages_delivered_ctr",
+    "msa_seller_budget",
+    "multi_event_conversion_attribution_setting",
+    "objective_result_rate",
+    "objective_results",
+    "product_group_retailer_id",
+    "product_retailer_id",
+    "product_views",
+    "purchase_per_landing_page_view",
+    "purchases_per_link_click",
+    "read_rate",
+    "result_rate",
+    "result_values_performance_indicator",
+    "results",
+    "shop_clicks",
+    "video_6_sec_watched_actions",
+    "video_view_per_impression",
 ]
 
 SLEEP_TIME_INCREMENT = 5
@@ -126,6 +218,8 @@ class AdsInsightStream(Stream):
         d_type = AdsInsights._field_types[field]  # noqa: SLF001
         if d_type == "string":
             return th.StringType()
+        if d_type in ("int", "unsigned int"):
+            return th.IntegerType()
         if d_type.startswith("list"):
             sub_props: list[th.Property]
             if "AdsActionStats" in d_type:
@@ -223,8 +317,9 @@ class AdsInsightStream(Stream):
     def _call_with_backoff(self, what: str, fn: t.Callable[[], T]) -> T:
         """Run one Graph API call, retrying transient errors with exponential backoff."""
 
-        def _log_retry(details: dict) -> None:
-            err = details["exception"]
+        def _log_retry(details: backoff.types.Details) -> None:
+            # backoff's Details TypedDict omits the key that on_exception handlers get.
+            err = details["exception"]  # type: ignore[typeddict-item]
             self.logger.warning(
                 "Transient Facebook API error during %s (code %s, subcode %s): %s. "
                 "Retrying in %.0fs (attempt %s/%s).",
@@ -318,7 +413,10 @@ class AdsInsightStream(Stream):
             percent_complete,
         )
         if status in ("Job Failed", "Job Skipped"):
-            return self._resubmit_or_raise(entry, f"reported '{status}'")
+            detail = (
+                f" ({job.get('error_code')}/{job.get('error_subcode')}: {job.get('error_message')})"
+            )
+            return self._resubmit_or_raise(entry, f"reported '{status}'{detail}")
         duration = time.time() - entry["started"]
         if duration > INSIGHTS_MAX_WAIT_TO_START_SECONDS and percent_complete == 0:
             return self._resubmit_or_raise(
