@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from singer_sdk.streams.core import REPLICATION_INCREMENTAL
 from singer_sdk.typing import (
     ArrayType,
     BooleanType,
@@ -95,7 +94,6 @@ class AdsetsStream(IncrementalFacebookStream):
 
     path = f"/adsets?fields={columns}"
     primary_keys = ["id", "updated_time"]  # noqa: RUF012
-    replication_method = REPLICATION_INCREMENTAL
     replication_key = "updated_time"
 
     schema = PropertiesList(

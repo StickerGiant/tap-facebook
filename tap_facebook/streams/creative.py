@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from singer_sdk.streams.core import REPLICATION_INCREMENTAL
 from singer_sdk.typing import (
     BooleanType,
     IntegerType,
@@ -83,7 +82,6 @@ class CreativeStream(FacebookStream):
     name = "creatives"
     path = f"/adcreatives?fields={columns}"
     tap_stream_id = "creatives"
-    replication_method = REPLICATION_INCREMENTAL
     replication_key = "id"
 
     schema = PropertiesList(

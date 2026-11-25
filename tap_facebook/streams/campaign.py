@@ -5,7 +5,6 @@ from __future__ import annotations
 import typing as t
 
 from singer_sdk import typing as th  # JSON Schema typing helpers
-from singer_sdk.streams.core import REPLICATION_INCREMENTAL
 
 from tap_facebook.client import IncrementalFacebookStream
 
@@ -72,7 +71,6 @@ class CampaignStream(IncrementalFacebookStream):
     path = f"/campaigns?fields={columns}"
     primary_keys = ["id", "updated_time"]  # noqa: RUF012
     tap_stream_id = "campaigns"
-    replication_method = REPLICATION_INCREMENTAL
     replication_key = "updated_time"
 
     PropertiesList = th.PropertiesList
